@@ -1,4 +1,11 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
+const {
+    Client,
+    GatewayIntentBits,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
+} = require('discord.js');
 const fs = require('fs');
 
 const client = new Client({
@@ -6,12 +13,8 @@ const client = new Client({
 });
 
 const TOKEN = process.env.TOKEN;
-
 const ARQUIVO = "ponto.json";
 
-// ==============================
-// Funções de arquivo
-// ==============================
 function carregarDados() {
     if (!fs.existsSync(ARQUIVO)) return {};
     return JSON.parse(fs.readFileSync(ARQUIVO));
@@ -21,168 +24,120 @@ function salvarDados(dados) {
     fs.writeFileSync(ARQUIVO, JSON.stringify(dados, null, 4));
 }
 
-// ==============================
-// Bot pronto
-// ==============================
 client.once('ready', () => {
     console.log(`Bot online como ${client.user.tag}`);
 });
 
-// ==============================
-// Comandos
-// ==============================
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.isChatInputCommand()) {
+
+        if (interaction.commandName === "painel") {
+
+            const embed = new EmbedBuilder()
+                .setTitle("📋 Sistema de Ponto")
+                .setDescription("Use os botões abaixo para registrar seu turno.")
+                .setColor("Blue");
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId("iniciar")
+                    .setLabel("Iniciar")
+                    .setStyle(ButtonStyle.Success),
+
+                new ButtonBuilder()
+                    .setCustomId("pausar")
+                    .setLabel("Pausar")
+                    .setStyle(ButtonStyle.Secondary),
+
+                new ButtonBuilder()
+                    .setCustomId("finalizar")
+                    .setLabel("Finalizar")
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+            return interaction.reply({ embeds: [embed], components: [row] });
+        }
+    }
+
+    if (!interaction.isButton()) return;
 
     const dados = carregarDados();
     const userId = interaction.user.id;
-    const hoje = new Date().toISOString().split('T')[0];
+    const hoje = new Date().toISOString().split("T")[0];
 
     if (!dados[userId]) dados[userId] = {};
     if (!dados[userId][hoje]) dados[userId][hoje] = {};
 
-    // ==========================
-    // ENTRAR
-    // ==========================
-    if (interaction.commandName === 'entrar') {
+    const agora = Date.now();
 
-        if (dados[userId][hoje].entrada && !dados[userId][hoje].saida) {
-            return interaction.reply({
-                content: "⚠️ Você já iniciou o turno e ainda não finalizou.",
-                ephemeral: true
-            });
-        }
+    if (interaction.customId === "iniciar") {
 
         dados[userId][hoje] = {
-            entrada: Date.now()
+            inicio: agora,
+            pausadoEm: null,
+            totalPausado: 0
         };
 
         salvarDados(dados);
 
-        return interaction.reply("✅ Ponto iniciado com sucesso!");
+        return interaction.reply({ content: "🟢 Ponto iniciado!", ephemeral: true });
     }
 
-    // ==========================
-    // SAIR
-    // ==========================
-    if (interaction.commandName === 'sair') {
+    if (interaction.customId === "pausar") {
 
-        if (!dados[userId][hoje].entrada || dados[userId][hoje].saida) {
-            return interaction.reply({
-                content: "⚠️ Você não iniciou um turno válido hoje.",
-                ephemeral: true
-            });
+        if (!dados[userId][hoje].inicio) {
+            return interaction.reply({ content: "Você não iniciou o ponto.", ephemeral: true });
         }
 
-        const entrada = dados[userId][hoje].entrada;
-        const saida = Date.now();
+        dados[userId][hoje].pausadoEm = agora;
+        salvarDados(dados);
 
-        // AGORA SALVA COMO NÚMERO
-        const totalHoras = (saida - entrada) / 1000 / 60 / 60;
+        return interaction.reply({ content: "⏸ Ponto pausado!", ephemeral: true });
+    }
 
-        dados[userId][hoje].saida = saida;
-        dados[userId][hoje].totalHoras = totalHoras;
+    if (interaction.customId === "finalizar") {
+
+        if (!dados[userId][hoje].inicio) {
+            return interaction.reply({ content: "Você não iniciou o ponto.", ephemeral: true });
+        }
+
+        if (dados[userId][hoje].pausadoEm) {
+            dados[userId][hoje].totalPausado += agora - dados[userId][hoje].pausadoEm;
+        }
+
+        const tempoTotal = agora - dados[userId][hoje].inicio - dados[userId][hoje].totalPausado;
+
+        const horas = Math.floor(tempoTotal / 3600000);
+        const minutos = Math.floor((tempoTotal % 3600000) / 60000);
+
+        dados[userId][hoje].finalizado = true;
+        dados[userId][hoje].horas = horas;
+        dados[userId][hoje].minutos = minutos;
 
         salvarDados(dados);
 
-        return interaction.reply("⛔ Turno finalizado com sucesso!");
-    }
+        const canalLogs = interaction.guild.channels.cache.find(c => c.name === "logs-ponto");
 
-    // ==========================
-    // RELATORIO DIARIO
-    // ==========================
-    if (interaction.commandName === 'relatorio') {
-
-        const user = interaction.options.getUser('usuario');
-        const dadosAtualizados = carregarDados();
-        const userData = dadosAtualizados[user.id];
-
-        if (!userData || !userData[hoje] || !userData[hoje].totalHoras) {
-            return interaction.reply({
-                content: `📊 ${user.username} ainda não possui horas registradas hoje.`,
-                ephemeral: true
+        if (canalLogs) {
+            canalLogs.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle("📊 Registro de Ponto")
+                        .setColor("Green")
+                        .addFields(
+                            { name: "Usuário", value: `<@${userId}>`, inline: true },
+                            { name: "Total Trabalhado", value: `${horas}h ${minutos}m`, inline: true }
+                        )
+                        .setTimestamp()
+                ]
             });
-        }
-
-        const horasHoje = Number(userData[hoje].totalHoras).toFixed(2);
-
-        return interaction.reply({
-            content: `📊 Relatório de ${user.username}\n\n🕒 Hoje trabalhou: ${horasHoje} horas.`,
-            ephemeral: true
-        });
-    }
-
-    // ==========================
-    // RELATORIO SEMANAL
-    // ==========================
-    if (interaction.commandName === 'relatorio_semanal') {
-
-        const user = interaction.options.getUser('usuario');
-        const dadosAtualizados = carregarDados();
-        const userData = dadosAtualizados[user.id];
-
-        if (!userData) {
-            return interaction.reply({
-                content: "Usuário não possui registros.",
-                ephemeral: true
-            });
-        }
-
-        let totalSemana = 0;
-        const hojeData = new Date();
-
-        for (let i = 0; i < 7; i++) {
-            const data = new Date();
-            data.setDate(hojeData.getDate() - i);
-            const dataFormatada = data.toISOString().split('T')[0];
-
-            if (userData[dataFormatada] && userData[dataFormatada].totalHoras) {
-                totalSemana += Number(userData[dataFormatada].totalHoras);
-            }
-        }
-
-        let resposta = `📊 Relatório semanal de ${user.username}\n\n🕒 Trabalhou ${totalSemana.toFixed(2)} horas nos últimos 7 dias.`;
-
-        if (totalSemana < 20) {
-            resposta += "\n⚠️ Abaixo da meta mínima de 20 horas!";
         }
 
         return interaction.reply({
-            content: resposta,
+            content: `🔴 Ponto finalizado! Você trabalhou ${horas}h ${minutos}m hoje.`,
             ephemeral: true
         });
-    }
-
-    // ==========================
-    // RESETAR SEMANA
-    // ==========================
-    if (interaction.commandName === 'resetar_semana') {
-
-        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-            return interaction.reply({
-                content: "❌ Você não tem permissão para usar este comando.",
-                ephemeral: true
-            });
-        }
-
-        const dadosAtualizados = carregarDados();
-        const hojeData = new Date();
-
-        for (let user in dadosAtualizados) {
-            for (let i = 0; i < 7; i++) {
-                const data = new Date();
-                data.setDate(hojeData.getDate() - i);
-                const dataFormatada = data.toISOString().split('T')[0];
-
-                if (dadosAtualizados[user][dataFormatada]) {
-                    delete dadosAtualizados[user][dataFormatada];
-                }
-            }
-        }
-
-        salvarDados(dadosAtualizados);
-
-        return interaction.reply("✅ Dados da última semana resetados com sucesso!");
     }
 
 });
